@@ -1,15 +1,19 @@
 
+import Link from "next/link";
+
 export default function PrivacyPolicy() {
   return (
-    <main style={{
-      maxWidth: 760,
-      margin: "40px auto",
-      padding: "24px",
-      fontFamily: "Arial, sans-serif",
-      lineHeight: 1.8,
-      color: "#192341",
-      background: "#fff"
-    }}>
+    <main
+      style={{
+        maxWidth: 760,
+        margin: "40px auto",
+        padding: "24px",
+        fontFamily: "Arial, sans-serif",
+        lineHeight: 1.8,
+        color: "#192341",
+        background: "#fff",
+      }}
+    >
       <h1>Privacy Policy</h1>
       <p>Last updated: October 2026</p>
 
@@ -65,11 +69,13 @@ export default function PrivacyPolicy() {
       </p>
 
       <p>
-        This template should be reviewed and updated with the operator's
+        This template should be reviewed and updated with the operator&apos;s
         real contact details and actual data practices before publication.
       </p>
 
-      <p><a href="/">Back to Home</a></p>
+      <p>
+        <Link href="/">Back to Home</Link>
+      </p>
     </main>
   );
 }
