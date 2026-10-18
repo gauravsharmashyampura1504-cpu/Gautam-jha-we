@@ -1,116 +1,141 @@
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 export const runtime = "nodejs";
 
-export async function POST(request: Request) {
+const redis = Redis.fromEnv();
+
+function safeEqual(a: string, b: string) {
+  const first = Buffer.from(a);
+  const second = Buffer.from(b);
+  return first.length === second.length && timingSafeEqual(first, second);
+}
+
+export async function POST(request: NextRequest) {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  const suppliedSecret =
+    request.headers.get("x-telegram-bot-api-secret-token") ?? "";
+
+  if (!secret || !safeEqual(secret, suppliedSecret)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const pixelId = process.env.NEXT_PUBLIC_META_PIXEL_ID;
+  const accessToken = process.env.META_CAPI_ACCESS_TOKEN;
+  const apiVersion = process.env.META_GRAPH_API_VERSION || "v22.0";
+
+  if (!botToken || !pixelId || !accessToken) {
+    return NextResponse.json(
+      { error: "Server configuration missing" },
+      { status: 500 }
+    );
+  }
+
+  let update: any;
+
   try {
-    const botToken = process.env.TELEGRAM_BOT_TOKEN;
-    const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    update = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
 
-    if (!botToken || !webhookSecret || !redisUrl || !redisToken) {
-      return NextResponse.json({ error: "Server configuration missing" }, { status: 500 });
-    }
+  const joinRequest = update?.chat_join_request;
 
-    const receivedSecret = request.headers.get("x-telegram-bot-api-secret-token") || "";
+  // Telegram sends many types of updates. Ignore everything else.
+  if (!joinRequest) {
+    return NextResponse.json({ ok: true });
+  }
 
-    const a = Buffer.from(receivedSecret);
-    const b = Buffer.from(webhookSecret);
+  const inviteUrl = joinRequest?.invite_link?.invite_link;
+  const inviteHash =
+    typeof inviteUrl === "string" ? inviteUrl.split("+").pop() : null;
 
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  if (!inviteHash) {
+    return NextResponse.json({ ok: true, skipped: "No tracked invite" });
+  }
 
-    const update = await request.json();
-    const joinRequest = update.chat_join_request;
+  const attribution = await redis.get<any>(`invite:${inviteHash}`);
 
-    if (!joinRequest) {
-      return NextResponse.json({ ok: true });
-    }
+  if (!attribution) {
+    return NextResponse.json({ ok: true, skipped: "No attribution" });
+  }
 
-    const chatId = String(joinRequest.chat?.id ?? "");
-    const userId = String(joinRequest.from?.id ?? "");
-    const inviteUrl = joinRequest.invite_link?.invite_link;
+  const userId = String(joinRequest?.from?.id ?? "");
+  const chatId = String(joinRequest?.chat?.id ?? "");
+  const requestDate = Number(joinRequest?.date ?? 0);
 
-    if (!chatId || !userId || !inviteUrl) {
-      return NextResponse.json({ ok: true });
-    }
+  if (!userId || !chatId || !requestDate) {
+    return NextResponse.json({ error: "Incomplete join request" }, { status: 400 });
+  }
 
-    const redis = new Redis({ url: redisUrl, token: redisToken });
-    const inviteHash = inviteUrl.split("+").pop();
+  // Stable event ID prevents duplicate Meta events for the same request.
+  const eventId = createHash("sha256")
+    .update(`${chatId}:${userId}:${requestDate}:${inviteHash}`)
+    .digest("hex");
 
-    if (!inviteHash) {
-      return NextResponse.json({ ok: true });
-    }
+  const lockKey = `meta-event:${eventId}`;
+  const lock = await redis.set(lockKey, "processing", {
+    nx: true,
+    ex: 300,
+  });
 
-    const raw = await redis.get<string>(`invite:${inviteHash}`);
+  if (lock !== "OK") {
+    return NextResponse.json({ ok: true, duplicate: true });
+  }
 
-    if (!raw) {
-      return NextResponse.json({ ok: true });
-    }
+  const userData: Record<string, string> = {};
 
-    const attribution = typeof raw === "string" ? JSON.parse(raw) : raw;
-    const eventId = `join_request_${chatId}_${userId}`;
+  if (attribution.fbp) userData.fbp = attribution.fbp;
+  if (attribution.fbc) userData.fbc = attribution.fbc;
 
-    await redis.set(
-      `event:${eventId}`,
-      JSON.stringify({ chatId, userId, receivedAt: new Date().toISOString() }),
-      { nx: true, ex: 60 * 60 * 24 * 90 }
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/${apiVersion}/${pixelId}/events?access_token=${encodeURIComponent(accessToken)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          data: [
+            {
+              event_name: "Subscribe",
+              event_time: requestDate,
+              event_id: eventId,
+              action_source: "other",
+              user_data: userData,
+              custom_data: {
+                channel: "Stock Learners",
+                conversion_type: "telegram_join_request",
+              },
+            },
+          ],
+        }),
+      }
     );
 
-    const metaToken = process.env.META_CAPI_ACCESS_TOKEN;
-    const pixelId = process.env.NEXT_PUBLIC_META_PIXEL_ID || "1757564198848437";
-    const graphVersion = process.env.META_GRAPH_API_VERSION;
+    const result = await response.json();
 
-    if (metaToken && graphVersion) {
-      const event = {
-        data: [
-          {
-            event_name: "JoinRequest",
-            event_time: Math.floor(Date.now() / 1000),
-            event_id: eventId,
-            action_source: "website",
-            event_source_url: process.env.SITE_URL || "",
-            user_data: {
-              client_ip_address: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim(),
-              client_user_agent: request.headers.get("user-agent") || undefined,
-              fbp: attribution.fbp || undefined,
-              fbc: attribution.fbc || undefined,
-            },
-            custom_data: {
-              channel_id: chatId,
-              source: attribution.utm_source || "website",
-            },
-          },
-        ],
-      };
-
-      const signature = createHmac("sha256", metaToken).update("").digest("hex");
-
-      const metaResponse = await fetch(
-        `https://graph.facebook.com/${graphVersion}/${pixelId}/events?access_token=${encodeURIComponent(metaToken)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(event),
-        }
+    if (!response.ok || Number(result?.events_received ?? 0) < 1) {
+      await redis.del(lockKey);
+      console.error("Meta CAPI error:", result);
+      return NextResponse.json(
+        { error: "Meta event was not accepted" },
+        { status: 502 }
       );
-
-      if (!metaResponse.ok) {
-        console.error("Meta CAPI event failed", await metaResponse.text());
-      }
-
-      void signature;
     }
 
-    return NextResponse.json({ ok: true });
+    await redis.set(lockKey, "sent", { ex: 60 * 60 * 24 * 30 });
+
+    return NextResponse.json({ ok: true, events_received: result.events_received });
   } catch (error) {
-    console.error("Telegram webhook error", error);
-    return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 });
+    await redis.del(lockKey);
+    console.error("Meta CAPI request failed:", error);
+
+    return NextResponse.json(
+      { error: "Event delivery failed" },
+      { status: 502 }
+    );
   }
-}
-  
+    }
