@@ -1,15 +1,19 @@
 
+import Link from "next/link";
+
 export default function TermsOfService() {
   return (
-    <main style={{
-      maxWidth: 760,
-      margin: "40px auto",
-      padding: "24px",
-      fontFamily: "Arial, sans-serif",
-      lineHeight: 1.8,
-      color: "#192341",
-      background: "#fff"
-    }}>
+    <main
+      style={{
+        maxWidth: 760,
+        margin: "40px auto",
+        padding: "24px",
+        fontFamily: "Arial, sans-serif",
+        lineHeight: 1.8,
+        color: "#192341",
+        background: "#fff",
+      }}
+    >
       <h1>Terms of Service</h1>
       <p>Last updated: October 2026</p>
 
@@ -46,7 +50,7 @@ export default function TermsOfService() {
       <p>
         Following an invite link or submitting a join request does not
         guarantee admission to the Telegram community. Access may
-        depend on administrator approval and Telegram's own rules.
+        depend on administrator approval and Telegram&apos;s own rules.
       </p>
 
       <h2>6. Third-Party Services</h2>
@@ -70,11 +74,13 @@ export default function TermsOfService() {
 
       <p>
         Before publication, review these terms for accuracy and add
-        the operator's actual contact details. Do not claim regulatory
+        the operator&apos;s actual contact details. Do not claim regulatory
         registration or authorization unless it is valid and verified.
       </p>
 
-      <p><a href="/">Back to Home</a></p>
+      <p>
+        <Link href="/">Back to Home</Link>
+      </p>
     </main>
   );
 }
