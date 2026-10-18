@@ -4,6 +4,15 @@ import { Redis } from "@upstash/redis";
 
 export const runtime = "nodejs";
 
+type InviteRequestBody = {
+  fbp?: string | null;
+  fbc?: string | null;
+  fbclid?: string | null;
+  utm_source?: string | null;
+  utm_campaign?: string | null;
+  consent?: string;
+};
+
 export async function POST(request: Request) {
   try {
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -12,13 +21,24 @@ export async function POST(request: Request) {
     const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
     if (!botToken || !chatId || !redisUrl || !redisToken) {
+      console.error("Invite API: Required environment variable missing");
+
       return NextResponse.json(
         { error: "Server configuration missing" },
         { status: 500 }
       );
     }
 
-    const body = await request.json().catch(() => ({}));
+    let body: InviteRequestBody;
+
+    try {
+      body = (await request.json()) as InviteRequestBody;
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid request body" },
+        { status: 400 }
+      );
+    }
 
     const redis = new Redis({
       url: redisUrl,
@@ -29,7 +49,9 @@ export async function POST(request: Request) {
       `https://api.telegram.org/bot${botToken}/createChatInviteLink`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           chat_id: chatId,
           creates_join_request: true,
@@ -40,14 +62,24 @@ export async function POST(request: Request) {
 
     const inviteData = await inviteResponse.json();
 
-    if (!inviteResponse.ok || !inviteData.ok || !inviteData.result?.invite_link) {
+    if (
+      !inviteResponse.ok ||
+      !inviteData.ok ||
+      !inviteData.result?.invite_link
+    ) {
+      console.error("Telegram invite creation failed:", {
+        status: inviteResponse.status,
+        description: inviteData.description,
+        error_code: inviteData.error_code,
+      });
+
       return NextResponse.json(
         { error: "Telegram invite creation failed" },
         { status: 502 }
       );
     }
 
-    const inviteUrl = inviteData.result.invite_link;
+    const inviteUrl: string = inviteData.result.invite_link;
     const inviteHash = inviteUrl.split("+").pop();
 
     if (!inviteHash) {
@@ -59,22 +91,24 @@ export async function POST(request: Request) {
 
     await redis.set(
       `invite:${inviteHash}`,
-      JSON.stringify({
+      {
         fbp: body.fbp ?? null,
         fbc: body.fbc ?? null,
         fbclid: body.fbclid ?? null,
         utm_source: body.utm_source ?? null,
         utm_campaign: body.utm_campaign ?? null,
         createdAt: new Date().toISOString(),
-      }),
+      },
       { ex: 60 * 60 * 24 * 30 }
     );
 
     return NextResponse.json({ inviteUrl });
-  } catch {
+  } catch (error) {
+    console.error("Invite API failed:", error);
+
     return NextResponse.json(
       { error: "Could not create invite link" },
       { status: 500 }
     );
   }
-                                            }
+}
