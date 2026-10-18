@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let update: any;
+  let update: unknown;
 
   try {
     update = await request.json();
