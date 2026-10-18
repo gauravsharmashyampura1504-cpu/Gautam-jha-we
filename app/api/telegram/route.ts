@@ -101,16 +101,30 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const attribution = await redis.get<Attribution>(
-    `invite:${inviteHash}`
-  );
+  
+const rawAttribution = await redis.get<Attribution | string>(
+  `invite:${inviteHash}`
+);
 
-  if (!attribution) {
-    return NextResponse.json({
-      ok: true,
-      skipped: "No attribution",
-    });
+let attribution: Attribution | null = null;
+
+if (typeof rawAttribution === "string") {
+  try {
+    attribution = JSON.parse(rawAttribution) as Attribution;
+  } catch {
+    console.error("Invalid attribution JSON in Redis");
   }
+} else if (rawAttribution) {
+  attribution = rawAttribution;
+}
+
+if (!attribution) {
+  return NextResponse.json({
+    ok: true,
+    skipped: "No attribution",
+  });
+}
+  
 
   const userId = String(joinRequest.from?.id ?? "");
   const chatId = String(joinRequest.chat?.id ?? "");
